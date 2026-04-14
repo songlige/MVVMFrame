@@ -15,37 +15,37 @@
 - 负责 UI 展示与用户交互（Jetpack Compose）。
 - 通过 `ViewModel` 管理页面状态，避免将业务逻辑写入 UI。
 - 当前示例：
-  - `HomeScreen.kt`
-  - `HomeViewModel.kt`
-  - `HomeUiState.kt`
+    - `HomeScreen.kt`
+    - `HomeViewModel.kt`
+    - `HomeUiState.kt`
 
 ### 2.2 domain（领域层）
 
 - 定义核心业务模型与业务规则。
 - 不依赖 Android 具体实现，便于测试与复用。
 - 当前示例：
-  - `Todo.kt`（领域实体）
-  - `TodoRepository.kt`（仓库接口）
-  - `GetTodoUseCase.kt`（业务用例）
+    - `Todo.kt`（领域实体）
+    - `TodoRepository.kt`（仓库接口）
+    - `GetTodoUseCase.kt`（业务用例）
 
 ### 2.3 data（数据层）
 
 - 负责远程/本地数据的获取与转换。
 - 实现 `domain` 层定义的仓库接口。
 - 当前示例：
-  - `TodoApiService.kt`（远程接口封装）
-  - `TodoDto.kt`（数据传输对象）
-  - `TodoRepositoryImpl.kt`（仓库实现）
+    - `TodoApiService.kt`（远程接口封装）
+    - `TodoDto.kt`（数据传输对象）
+    - `TodoRepositoryImpl.kt`（仓库实现）
 
 ### 2.4 core（基础能力层）
 
 - 提供通用能力：网络、依赖注入、通用模型。
 - 当前示例：
-  - `HttpClient.kt`（原生网络请求封装）
-  - `HttpRequest.kt`（单次请求快照、`HttpInterceptor`、`HttpLogger` 声明）
-  - `NetworkResult.kt`（统一结果模型）
-  - `NetworkException.kt`（统一异常模型）
-  - `ServiceLocator.kt`（轻量依赖注入）
+    - `HttpClient.kt`（原生网络请求封装）
+    - `HttpRequest.kt`（单次请求快照、`HttpInterceptor`、`HttpLogger` 声明）
+    - `NetworkResult.kt`（统一结果模型）
+    - `NetworkException.kt`（统一异常模型）
+    - `ServiceLocator.kt`（轻量依赖注入）
 
 ---
 
@@ -81,11 +81,11 @@
 - **调试日志**：可选 `HttpLogger`；若注入，会打印合并后的请求信息与响应（敏感头 `Authorization`、`Cookie` 打码；响应体过长时截断）。`ServiceLocator` 在 **Debug** 构建（`BuildConfig.DEBUG`）下默认注入基于 `android.util.Log` 的实现。
 - **PATCH 兼容**：部分系统对 `setRequestMethod("PATCH")` 受限时，使用反射回退以发送 PATCH（见 `HttpClient` 实现）。
 - 自定义超时：
-  - `connectTimeoutMs`（连接超时）
-  - `readTimeoutMs`（读取超时）
+    - `connectTimeoutMs`（连接超时）
+    - `readTimeoutMs`（读取超时）
 - 统一解析流程：
-  - 2xx：读取 `inputStream` 并解析
-  - 非 2xx：读取 `errorStream` 并包装 `HttpError`
+    - 2xx：读取 `inputStream` 并解析
+    - 非 2xx：读取 `errorStream` 并包装 `HttpError`
 
 ### 4.3 返回模型
 
@@ -301,9 +301,9 @@ app/src/main/java/com/hk/word/gameboosterproject/
 - 建议使用 JDK 17 进行 Android 构建。
 - 确保本机已正确配置 Android SDK 与 Gradle 运行环境。
 - 如需验证工程是否可正常编译，可执行：
-  - `gradlew.bat assembleDebug`
+    - `gradlew.bat assembleDebug`
 - 如需执行基础测试，可执行：
-  - `gradlew.bat test`
+    - `gradlew.bat test`
 
 ### 9.1 验证重点
 

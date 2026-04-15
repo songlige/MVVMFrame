@@ -2,10 +2,12 @@ package com.hk.word.gameboosterproject.data.repository
 
 import com.hk.word.gameboosterproject.core.network.NetworkResult
 import com.hk.word.gameboosterproject.data.local.dao.TodoDao
+import com.hk.word.gameboosterproject.data.local.entity.TodoEntity
 import com.hk.word.gameboosterproject.data.local.mapper.toDomain
 import com.hk.word.gameboosterproject.data.local.mapper.toEntity
 import com.hk.word.gameboosterproject.data.remote.api.TodoRemoteDataSource
 import com.hk.word.gameboosterproject.domain.repository.TodoDataSource
+import com.hk.word.gameboosterproject.domain.repository.TodoListLoadResult
 import com.hk.word.gameboosterproject.domain.repository.TodoLoadResult
 import com.hk.word.gameboosterproject.domain.repository.TodoRepository
 
@@ -23,7 +25,9 @@ import com.hk.word.gameboosterproject.domain.repository.TodoRepository
  */
 class TodoRepositoryImpl(
     private val remoteDataSource: TodoRemoteDataSource,
-    private val todoDao: TodoDao
+    private val todoDao: TodoDao,
+    private val cacheTtlMs: Long = DEFAULT_CACHE_TTL_MS,
+    private val currentTimeMillis: () -> Long = System::currentTimeMillis
 ) : TodoRepository {
     /**
      * 从远端获取 Todo 并映射为领域模型。
@@ -49,7 +53,7 @@ class TodoRepositoryImpl(
 
             is NetworkResult.Error -> {
                 val cachedTodo = todoDao.getTodoById(todoId)
-                if (cachedTodo != null) {
+                if (cachedTodo != null && !isCacheExpired(cachedTodo)) {
                     NetworkResult.Success(
                         TodoLoadResult(
                             todo = cachedTodo.toDomain(),
@@ -61,5 +65,44 @@ class TodoRepositoryImpl(
                 }
             }
         }
+    }
+
+    override suspend fun getTodos(): NetworkResult<TodoListLoadResult> {
+        return when (val result = remoteDataSource.fetchTodos()) {
+            is NetworkResult.Success -> {
+                val cachedAt = currentTimeMillis()
+                val todoEntities = result.data.map { dto -> dto.toEntity(cachedAt = cachedAt) }
+                todoDao.insertTodos(todoEntities)
+                NetworkResult.Success(
+                    TodoListLoadResult(
+                        todos = result.data.map { dto -> dto.toDomain() },
+                        source = TodoDataSource.Remote
+                    )
+                )
+            }
+
+            is NetworkResult.Error -> {
+                val cachedTodos = todoDao.getAllTodos()
+                if (cachedTodos.isNotEmpty() && cachedTodos.all { !isCacheExpired(it) }) {
+                    NetworkResult.Success(
+                        TodoListLoadResult(
+                            todos = cachedTodos.map { entity -> entity.toDomain() },
+                            source = TodoDataSource.LocalCache(result.exception)
+                        )
+                    )
+                } else {
+                    result
+                }
+            }
+        }
+    }
+
+    private fun isCacheExpired(cachedTodo: TodoEntity): Boolean {
+        val cacheAgeMs = currentTimeMillis() - cachedTodo.cachedAt
+        return cacheAgeMs > cacheTtlMs
+    }
+
+    private companion object {
+        const val DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000L
     }
 }

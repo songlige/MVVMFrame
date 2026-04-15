@@ -11,7 +11,7 @@ import com.hk.word.gameboosterproject.core.network.HttpLogger
 import com.hk.word.gameboosterproject.data.local.db.AppDatabase
 import com.hk.word.gameboosterproject.data.remote.api.TodoApiService
 import com.hk.word.gameboosterproject.data.repository.TodoRepositoryImpl
-import com.hk.word.gameboosterproject.domain.usecase.GetTodoUseCase
+import com.hk.word.gameboosterproject.domain.usecase.GetTodoListUseCase
 import com.hk.word.gameboosterproject.presentation.home.HomeViewModel
 
 /**
@@ -67,8 +67,7 @@ object ServiceLocator {
     // 仓库实现：负责调用 API 并转换为域层需要的数据结构
     private val todoRepository by lazy { TodoRepositoryImpl(todoApiService, todoDao) }
 
-    // 用例（UseCase）：封装业务逻辑，供 ViewModel 调用
-    private val getTodoUseCase by lazy { GetTodoUseCase(todoRepository) }
+    private val getTodoListUseCase by lazy { GetTodoListUseCase(todoRepository) }
 
     // 为 HomeViewModel 提供一个简单的 ViewModelProvider.Factory
     // 通过 factory 可以在 Activity/Fragment 中安全创建 HomeViewModel
@@ -77,7 +76,7 @@ object ServiceLocator {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 if (modelClass.isAssignableFrom(HomeViewModel::class.java)) {
-                    return HomeViewModel(getTodoUseCase) as T
+                    return HomeViewModel(getTodoListUseCase) as T
                 }
                 throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
             }

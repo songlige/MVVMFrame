@@ -12,4 +12,10 @@ class TodoApiService(
             TodoDto.fromJson(raw)
         }
     }
+
+    override suspend fun fetchTodos(): NetworkResult<List<TodoDto>> {
+        return httpClient.get("https://jsonplaceholder.typicode.com/todos") { raw ->
+            TodoDto.listFromJson(raw)
+        }
+    }
 }

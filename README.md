@@ -18,6 +18,7 @@
     - `HomeScreen.kt`
     - `HomeViewModel.kt`
     - `HomeUiState.kt`
+    - `TodoUserMessageMapper.kt`
 
 ### 2.2 domain（领域层）
 
@@ -33,7 +34,12 @@
 - 负责远程/本地数据的获取与转换。
 - 实现 `domain` 层定义的仓库接口。
 - 当前示例：
+    - `TodoDao.kt`（本地缓存查询接口）
+    - `AppDatabase.kt`（Room 数据库入口）
+    - `TodoEntity.kt`（本地缓存实体）
+    - `TodoLocalMapper.kt`（本地/远端模型映射）
     - `TodoApiService.kt`（远程接口封装）
+    - `TodoRemoteDataSource.kt`（远端数据源抽象）
     - `TodoDto.kt`（数据传输对象）
     - `TodoRepositoryImpl.kt`（仓库实现）
 
@@ -53,14 +59,15 @@
 
 页面点击请求后的完整链路如下：
 
-1. `HomeScreen` 触发 `onLoadClick`
+1. `HomeScreen` 触发加载、重试或切换编号事件
 2. `HomeViewModel.loadTodo()`
 3. 调用 `GetTodoUseCase`
 4. 调用 `TodoRepository` 接口
-5. `TodoRepositoryImpl` 转发到 `TodoApiService`
+5. `TodoRepositoryImpl` 先请求远端数据源，再决定写入/读取 Room 缓存
 6. `TodoApiService` 使用 `HttpClient` 发起网络请求
-7. 返回 `NetworkResult` 给 ViewModel
-8. ViewModel 更新 `HomeUiState`，UI 自动响应渲染
+7. 成功时写入 Room；失败时尝试回退本地缓存
+8. 返回 `NetworkResult` 给 ViewModel
+9. ViewModel 更新 `HomeUiState`，UI 自动响应渲染
 
 ---
 
@@ -113,28 +120,39 @@
 
 ### 5.2 首页交互能力
 
-首页当前提供一个“请求远程数据”按钮，对应以下功能：
+首页当前已经从“单次请求示例”扩展为一个轻量 Todo 列表页，具备以下交互能力：
 
-- 初始文案为“点击加载远程任务”；
-- 点击按钮后进入 `loading` 状态；
-- `loading` 期间按钮禁用，避免重复请求；
-- 页面显示 `CircularProgressIndicator` 提示用户正在加载；
-- 请求成功后展示 Todo 内容，格式为：`#id title（完成：true/false）`；
-- 请求失败后展示错误文案，并使用错误色高亮显示。
+- 首次进入页面时自动加载远程 Todo 列表；
+- 顶部展示当前结果数量与列表状态提示；
+- 支持标题关键字搜索，输入后立即在本地列表中过滤；
+- 支持“全部 / 已完成 / 未完成”三态筛选；
+- 支持手动刷新列表，刷新期间按钮禁用，避免重复请求；
+- 首次加载时展示 `CircularProgressIndicator`；
+- 请求成功后以列表形式展示 Todo 标题与完成状态；
+- 当数据来自本地缓存时，页面展示“网络失败，已展示本地缓存列表”提示；
+- 请求失败后展示用户可读的错误文案，并提供“重新获取列表”按钮；
+- 当筛选结果为空时，展示“无匹配结果”的空状态提示。
 
 ### 5.3 状态管理能力
 
 首页状态由 `HomeUiState` 统一维护，当前包含：
 
-- `loading`：控制按钮可用状态与加载指示器显示；
-- `todoText`：控制首页主文案；
-- `errorMessage`：控制错误提示展示与隐藏。
+- `loading`：控制刷新按钮可用状态与加载指示器显示；
+- `allTodos`：记录当前已加载的完整 Todo 列表；
+- `visibleTodos`：记录按搜索与筛选条件计算后的展示列表；
+- `searchQuery`：记录当前搜索关键字；
+- `selectedFilter`：记录当前完成状态筛选值；
+- `statusMessage`：提示当前数据来自网络还是本地缓存；
+- `errorMessage`：控制错误提示展示与隐藏；
+- `hasLoadedOnce`：区分首次加载态与空数据态。
 
 `HomeViewModel` 使用：
 
 - `MutableStateFlow` 持有内部状态；
 - `StateFlow` 对外暴露只读状态；
-- `collectAsStateWithLifecycle()` 在 Compose 页面中安全订阅状态。
+- `collectAsStateWithLifecycle()` 在 Compose 页面中安全订阅状态；
+- 本地过滤函数统一处理关键字搜索与完成状态筛选；
+- 通过 `loadTodos / onSearchQueryChange / onFilterChange / retryLoad` 收敛页面交互入口。
 
 ### 5.4 网络请求能力
 
@@ -152,17 +170,36 @@
 
 ### 5.5 数据解析与模型转换
 
-当前示例已完成从远程 JSON 到领域模型的完整转换流程：
+当前示例已完成“远端接口 + Room 缓存”结合的数据流，并同时支持单条 Todo 与列表 Todo 的读取：
 
-1. `TodoApiService` 请求远程接口；
+1. `TodoApiService` 既可请求单条接口 `/todos/{id}`，也可请求列表接口 `/todos`；
 2. `HttpClient` 返回原始响应字符串；
-3. `TodoDto.fromJson(raw)` 使用 `JSONObject` 完成 JSON 解析；
-4. `TodoRepositoryImpl` 将 `TodoDto` 转为 `domain` 层的 `Todo`；
-5. `GetTodoUseCase` 向表现层暴露统一业务入口。
+3. `TodoDto.fromJson(raw)` 使用 `JSONObject` 解析单条 JSON；
+4. `TodoDto.listFromJson(raw)` 使用 `JSONArray` 解析列表 JSON；
+5. `TodoRepositoryImpl` 在远端成功时将 `TodoDto` 或 `List<TodoDto>` 写入 `Room`；
+6. 若远端失败，则通过 `TodoDao` 查询单条或全量本地缓存并回退返回；
+7. 最终再转换为 `domain` 层的 `TodoLoadResult` 或 `TodoListLoadResult` 暴露给上层。
 
-这意味着后续新增接口时，只需按相同模式补充 `Dto`、`ApiService`、`RepositoryImpl` 和 `UseCase` 即可。
+这意味着后续新增接口时，只需按相同模式补充 `Dto`、`Entity`、`Dao`、`ApiService`、`RepositoryImpl` 和 `UseCase` 即可。
 
-### 5.6 统一错误处理能力
+### 5.6 Room 本地缓存能力
+
+当前项目已经引入 `Room` 作为最小可用缓存层，具备如下行为：
+
+- 数据库入口：`AppDatabase`
+- 缓存表：`todos`
+- 主键：`TodoEntity.id`
+- DAO：`TodoDao` 提供按编号查询、全量查询、单条覆盖写入和批量覆盖写入
+- 缓存时间戳：`TodoEntity.cachedAt`
+- 固定 TTL：`5 分钟`（`TodoRepositoryImpl.DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000L`）
+- 缓存策略：
+    - 远端成功：写入缓存并返回最新数据
+    - 远端失败：仅当本地缓存未过期时回退返回
+    - 列表读取场景下，远端失败时会尝试回退整批未过期缓存数据
+    - 无缓存或缓存已过期：继续向上抛出网络错误
+- 表现层会根据数据来源显示“网络最新数据”或“本地缓存回退”提示
+
+### 5.7 统一错误处理能力
 
 当前网络异常已经完成分层封装，主要包括：
 
@@ -172,17 +209,27 @@
 
 上层业务统一处理 `NetworkResult.Success` 与 `NetworkResult.Error`，无需在每层重复 `try-catch`。
 
-### 5.7 轻量依赖注入能力
+在表现层，新增 `TodoUserMessageMapper` 对底层异常做进一步转换，例如：
+
+- `404`：提示当前编号不存在，可切换其他编号；
+- `5xx`：提示服务器暂时不可用；
+- 超时 / 断网：提示用户检查网络后重试；
+- 解析失败：提示服务端返回数据格式异常。
+
+### 5.8 轻量依赖注入能力
 
 当前项目通过 `ServiceLocator` 完成最小可用依赖装配，已经串联如下对象：
 
 - `HttpClient`
+- `AppDatabase`
+- `TodoDao`
 - `TodoApiService`
 - `TodoRepositoryImpl`
 - `GetTodoUseCase`
+- `GetTodoListUseCase`
 - `HomeViewModelFactory`
 
-这种方式虽然轻量，但已经足够支持当前单页面和单链路示例开发。
+这种方式虽然轻量，但已经足够支持当前单页面和列表读取链路示例开发。
 
 ---
 
@@ -198,8 +245,8 @@
 
 - `namespace`：`com.hk.word.gameboosterproject`
 - `applicationId`：`com.hk.word.gameboosterproject`
-- `compileSdk`：34
-- `targetSdk`：34
+- `compileSdk`：36
+- `targetSdk`：35
 - `minSdk`：23
 - 当前启用 `Jetpack Compose`
 - 当前 `jvmTarget` 为 `1.8`
@@ -212,6 +259,9 @@
 - `androidx.lifecycle:lifecycle-viewmodel-compose`
 - `androidx.lifecycle:lifecycle-runtime-compose`
 - `org.jetbrains.kotlinx:kotlinx-coroutines-android`
+- `androidx.room:room-runtime`
+- `androidx.room:room-ktx`
+- `androidx.room:room-compiler`
 - `androidx.activity:activity-compose`
 - Compose BOM
 - `androidx.compose.ui:ui`
@@ -236,8 +286,14 @@ app/src/main/java/com/hk/word/gameboosterproject/
 │     ├─ NetworkException.kt
 │     └─ NetworkResult.kt
 ├─ data/
+│  ├─ local/
+│  │  ├─ dao/TodoDao.kt
+│  │  ├─ db/AppDatabase.kt
+│  │  ├─ entity/TodoEntity.kt
+│  │  └─ mapper/TodoLocalMapper.kt
 │  ├─ remote/
 │  │  ├─ api/TodoApiService.kt
+│  │  ├─ api/TodoRemoteDataSource.kt
 │  │  └─ dto/TodoDto.kt
 │  └─ repository/TodoRepositoryImpl.kt
 ├─ domain/
@@ -248,51 +304,159 @@ app/src/main/java/com/hk/word/gameboosterproject/
 │  └─ home/
 │     ├─ HomeScreen.kt
 │     ├─ HomeUiState.kt
-│     └─ HomeViewModel.kt
+│     ├─ HomeViewModel.kt
+│     └─ TodoUserMessageMapper.kt
 └─ MainActivity.kt
 ```
 
 ---
 
-## 8. 后续功能补充建议
+## 8. 尚未实现的功能设计
 
-如果要把该项目从“架构示例”继续扩展成真正可用的业务工程，建议补充以下功能：
+当前工程已经具备可运行的最小闭环，但以下能力仍处于“设计建议 / 下一步规划”阶段，代码中尚未正式落地。为避免与“已实现功能”混淆，本节仅描述建议方案，不代表当前版本已经支持。
 
-### 8.1 网络层增强
+### 8.1 网络层下一步增强
 
-以下能力已在当前代码中落地（详见第 4.2、5.4 节）：
+以下基础能力已经具备：多 HTTP 方法、Query/Header/Body、拦截器链、Debug 日志、统一异常模型。基于此，建议继续补充：
 
-1. **HTTP 方法**：`HttpClient` 已支持 `GET/POST/PUT/DELETE/PATCH`，含可选请求体与默认 `Content-Type`。
-2. **Query / Header / Body**：各方法支持 `queryParams`、`headers`；`POST/PUT/DELETE/PATCH` 支持可选 `body` 与 `bodyContentType`。
-3. **日志**：`HttpLogger` + `ServiceLocator` 在 Debug 下输出到 Logcat；敏感头打码、响应体超长截断。
-4. **拦截器**：`HttpInterceptor` 链式处理 `HttpRequest`，便于统一 Token、公共参数等。
+1. **统一重试策略**
+   - 目标：对超时、弱网、偶发 5xx 等临时性错误提供有限次自动重试。
+   - 建议做法：在 `HttpClient` 外层增加 retry 包装器，按异常类型区分是否可重试，并加入指数退避。
+   - 建议限制：默认仅重试幂等请求（如 `GET`），避免 `POST` 重复提交带来副作用。
 
-**仍可按需扩展**：自动重试、证书固定、请求/响应压缩、网络质量监控与埋点等。
+2. **认证与会话管理**
+   - 目标：为后续接入真实业务接口预留登录态、Token 注入与失效处理能力。
+   - 建议做法：通过 `HttpInterceptor` 统一注入 `Authorization` 头；当接口返回 `401` 时，统一触发登录失效流程或刷新令牌逻辑。
+   - 当前状态：项目中已有拦截器扩展点，但尚未接入真实鉴权链路。
 
-### 8.2 业务层增强
+3. **接口描述与请求封装统一化**
+   - 目标：减少各 `ApiService` 手写 URL、Header、解析逻辑时的重复代码。
+   - 建议做法：抽象出请求配置对象，例如 `Endpoint` / `RequestSpec`，让 `ApiService` 更聚焦于业务入参与结果映射。
+   - 适用场景：当接口数量从单个 Todo 示例扩展到多个业务域时价值会明显提升。
 
-1. 抽象更多 `UseCase`，避免 ViewModel 直接感知过多仓库细节。
-2. 补充更多领域实体与仓库接口，支持多模块业务扩展。
-3. 增加错误码到用户提示文案的映射层，避免直接展示底层异常信息。
+4. **上传、下载与大响应处理**
+   - 目标：支持文件上传、文件下载、流式读取等更接近真实业务的场景。
+   - 建议做法：在现有 `String` 响应读取之外，增加字节流处理入口；必要时增加进度回调。
+   - 当前限制：当前网络层主要面向 JSON 文本接口。
 
-### 8.3 数据层增强
+### 8.2 业务层下一步增强
 
-1. 引入 Room 作为本地缓存层。
-2. 支持“本地优先”或“网络优先”的数据策略。
-3. 增加 DTO 与 Domain 的 Mapper，避免仓库内手写重复转换逻辑。
+当前业务层已经具备“获取单条 Todo + 获取 Todo 列表”的最小读链路。若继续扩展为真正的业务工程，建议优先补充：
 
-### 8.4 表现层增强
+1. **更细粒度的业务 UseCase**
+   - 当前已实现：`GetTodoUseCase`、`GetTodoListUseCase`。
+   - 后续可继续拆分：`SearchTodoUseCase`、`FilterTodoUseCase`，或在列表规模增大时将筛选逻辑从 `ViewModel` 下沉到 `domain` 层。
 
-1. 为首页补充空状态、失败重试、下拉刷新等体验能力。
-2. 增加多页面导航，形成真正的业务流程。
-3. 抽离公共 UI 组件，减少页面重复代码。
+2. **写操作 UseCase**
+   - 例如：`RefreshTodoUseCase`、`UpdateTodoStatusUseCase`、`CreateTodoUseCase`。
+   - 价值：把“读取示例”扩展为“可读可写”的完整业务链路。
+   - 设计建议：写操作与读操作分离，避免 ViewModel 直接拼接仓库调用细节。
 
-### 8.5 工程化增强
+3. **领域规则下沉**
+   - 目标：把“搜索条件组合”“筛选规则复用”“是否允许重复刷新”“业务状态转换规则”等逻辑沉淀到 `domain` 层。
+   - 当前状态：搜索与筛选逻辑当前仍主要位于 `HomeViewModel`，后续可逐步下沉为可测试的领域规则。
 
-1. 引入 Hilt 替代 `ServiceLocator`。
-2. 增加单元测试、集成测试、Compose UI 测试。
-3. 配置 CI，在提交后自动执行构建与测试。
-4. 根据业务规模拆分为多个 feature module。
+4. **统一用户提示规范**
+   - 当前已有 `TodoUserMessageMapper` 将底层异常映射为用户文案。
+   - 后续可继续升级为：
+     - 统一错误码到文案的映射表；
+     - 接入字符串资源以支持国际化；
+     - 区分 Toast、Snackbar、页面内提示等不同消息级别。
+
+### 8.3 数据层下一步增强
+
+当前数据层已经实现“远端获取 -> 成功写缓存 -> 失败读缓存”的单条与列表数据策略，但距离可扩展数据架构还有一些关键能力未实现：
+
+1. **缓存有效期与过期策略**
+   - 目标：避免本地缓存永久有效，导致用户长期看到陈旧数据。
+   - 当前状态：`TodoRepositoryImpl` 已基于 `TodoEntity.cachedAt` 落地固定 TTL 判断；网络失败时仅回退未过期缓存，过期缓存视为无缓存。
+   - 后续可继续扩展：将固定 TTL 演进为按业务场景可配置策略，或继续补充静默刷新、强制刷新等更细粒度的数据策略。
+
+2. **批量同步与列表缓存**
+   - 当前已实现：`TodoDao` 已支持批量插入与全量查询，`TodoRepositoryImpl` 已支持列表缓存回退。
+   - 后续目标：进一步支持分页页、首页聚合数据场景。
+   - 后续建议做法：继续扩展 `Dao` 的条件查询能力，必要时增加分页键或同步游标字段。
+
+3. **可切换的数据获取策略**
+   - 例如：
+     - `network-first`
+     - `local-first`
+     - `cache-then-network`
+   - 价值：不同页面可按时效性与体验要求选择不同策略，而不是全项目共用同一套规则。
+
+4. **更通用的 Mapper 组织方式**
+   - 当前已经存在 `TodoLocalMapper`，但仍偏向单业务示例。
+   - 后续建议统一约束：
+     - `Dto -> Entity`
+     - `Entity -> Domain`
+     - `Dto -> Domain`
+   - 这样在业务增多后，模型转换边界会更清晰，也更利于测试。
+
+### 8.4 表现层下一步增强
+
+当前首页已具备加载态、错误态、缓存提示、列表展示、关键字搜索与完成状态筛选，但仍属于单页演示结构。未实现、但值得继续补充的能力包括：
+
+1. **列表页 + 详情页导航**
+   - 目标：从“单页示例”扩展为真正的页面流转。
+   - 建议页面：Todo 列表页、Todo 详情页、设置页。
+   - 建议技术：引入 `Navigation Compose`，统一管理 route、参数传递和返回栈。
+
+2. **更完整的加载体验**
+   - 当前已实现：首次加载指示器、手动刷新、空列表态与无搜索结果态区分。
+   - 可继续补充能力：
+     - 下拉刷新；
+     - 骨架屏；
+     - 首次加载与局部刷新进一步分离。
+   - 价值：让界面更接近真实线上应用体验。
+
+3. **公共组件与页面状态规范化**
+   - 建议抽离：
+     - 通用错误提示组件；
+     - 通用加载组件；
+     - 通用空状态组件；
+     - 页面顶部操作栏或按钮组组件。
+   - 目标：减少页面重复代码，并统一视觉与交互行为。
+
+4. **事件模型统一**
+   - 当前页面交互主要围绕按钮点击直接触发 ViewModel 方法。
+   - 后续可演进为 `UiEvent` + `reduce` 风格，便于复杂页面收敛交互入口，也更方便测试状态变化。
+
+### 8.5 工程化下一步增强
+
+工程层面目前已经有基础测试依赖，并存在少量单元测试与示例仪器测试；但完整的工程化体系仍未形成，建议继续补充：
+
+1. **依赖注入升级**
+   - 当前：使用 `ServiceLocator` 手动装配依赖，轻量直观，适合当前规模。
+   - 后续：可迁移到 `Hilt`，降低对象创建样板代码，并提升多页面、多模块下的可维护性。
+
+2. **测试体系扩展**
+   - 当前已有：
+     - `TodoRepositoryImplTest`
+     - `HomeViewModelTest`
+     - `TodoUserMessageMapper` 相关单元测试
+     - 示例 `androidTest`
+   - 尚未完善：
+     - `HttpClient` 拦截器与异常分支测试；
+     - `Room` 数据层集成测试；
+     - Compose UI 交互测试；
+     - 列表分页、复杂筛选条件等更细粒度用例测试。
+
+3. **CI 与质量门禁**
+   - 建议在代码托管平台配置自动化流程，至少包含：
+     - `assembleDebug`
+     - `test`
+     - Lint 或静态检查
+   - 价值：避免回归问题在本地遗漏，提升多人协作稳定性。
+
+4. **模块化拆分**
+   - 当前工程仍是单 `app` 模块，适合起步阶段。
+   - 后续可根据业务增长拆分为：
+     - `core-common`
+     - `core-network`
+     - `feature-home`
+     - `feature-todo`
+     - `data-*`
+   - 价值：降低编译耦合，明确团队边界，便于按功能并行开发。
 
 ---
 
@@ -310,10 +474,12 @@ app/src/main/java/com/hk/word/gameboosterproject/
 完成构建后，建议重点验证以下内容：
 
 1. 应用是否能正常启动并进入首页。
-2. 点击“请求远程数据”后，是否正确出现加载态。
-3. 网络成功时，是否能正确展示 Todo 数据。
-4. 断网或接口异常时，是否能正确展示错误信息。
-5. （可选）使用 **Debug** 包运行时，在 Logcat 中过滤标签 `HttpClient`，确认请求与响应日志是否符合预期；**Release** 包默认不输出上述网络日志。
+2. 点击“加载当前编号”后，是否正确出现加载态。
+3. 点击“上一个 / 下一个”后，是否会切换请求目标编号。
+4. 网络成功时，是否能正确展示 Todo 标题与完成状态。
+5. 首次联网成功后再断网，是否仍可通过相同编号读取本地缓存。
+6. 断网且无缓存时，是否能正确展示错误信息并支持重试。
+7. （可选）使用 **Debug** 包运行时，在 Logcat 中过滤标签 `HttpClient`，确认请求与响应日志是否符合预期；**Release** 包默认不输出上述网络日志。
 
 ---
 
@@ -323,7 +489,8 @@ app/src/main/java/com/hk/word/gameboosterproject/
 
 - 架构分层明确，方便后续团队协作；
 - 网络层不依赖第三方重型框架，便于理解底层原理；并已支持多方法、Query/Header、拦截器与调试日志；
-- UI、状态、用例、仓库、网络形成完整闭环；
+- UI、状态、用例、仓库、网络与本地缓存形成完整闭环，首页已具备空状态、编号切换、失败重试、缓存回退与用户友好错误提示；
 - 适合作为后续接入真实业务接口、扩展页面与能力的脚手架。
 
-后续在此基础上继续补充真实业务功能时，建议优先完善依赖注入方案、测试体系与业务错误文案映射等工程化能力。
+后续在此基础上继续补充真实业务功能时，建议优先完善依赖注入方案、测试体系、缓存策略细化与导航等工程化能力。
+  

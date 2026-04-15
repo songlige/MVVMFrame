@@ -5,4 +5,6 @@ import com.hk.word.gameboosterproject.data.remote.dto.TodoDto
 
 interface TodoRemoteDataSource {
     suspend fun fetchTodo(todoId: Int): NetworkResult<TodoDto>
+
+    suspend fun fetchTodos(): NetworkResult<List<TodoDto>>
 }

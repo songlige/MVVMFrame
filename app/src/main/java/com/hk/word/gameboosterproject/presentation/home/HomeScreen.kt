@@ -1,17 +1,24 @@
 package com.hk.word.gameboosterproject.presentation.home
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,7 +29,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  * 首页路由层 Composable，负责从 ViewModel 订阅状态并将它传递给展示层 `HomeScreen`。
  *
  * - 会使用 `viewModel.uiState` 的生命周期安全收集 (`collectAsStateWithLifecycle`)。
- * - 将加载、重试和切换编号事件透传给展示层。
+ * - 首次进入时自动触发列表加载，并将搜索、筛选、刷新事件透传给展示层。
  *
  * @param viewModel 提供 UI 状态与行为的 [HomeViewModel]
  * @param modifier 可选的 [Modifier]，用于外层布局调整
@@ -33,12 +40,15 @@ fun HomeRoute(
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) {
+        viewModel.loadTodos()
+    }
     HomeScreen(
         state = state,
-        onLoadClick = viewModel::loadTodo,
-        onPreviousClick = viewModel::loadPreviousTodo,
-        onNextClick = viewModel::loadNextTodo,
+        onRefreshClick = viewModel::loadTodos,
         onRetryClick = viewModel::retryLoad,
+        onSearchQueryChange = viewModel::onSearchQueryChange,
+        onFilterChange = viewModel::onFilterChange,
         modifier = modifier
     )
 }
@@ -47,53 +57,106 @@ fun HomeRoute(
  * 首页的展示层 Composable，基于传入的 [HomeUiState] 渲染 UI。
  *
  * 视图行为：
- * - 显示当前 Todo 编号；
- * - 根据内容状态显示空状态、加载态、成功态或错误态；
- * - 点击按钮可触发加载、重试和切换上下一个 Todo；
- * - 根据 `loading` 控制按钮可用性与加载指示器显示。
+ * - 支持标题关键字搜索与完成状态筛选；
+ * - 根据内容状态显示加载态、错误态、空结果态或列表内容；
+ * - 点击按钮可触发刷新和失败重试。
  *
- * @param state 当前 UI 状态，包含 `currentTodoId`、`todoTitle`、`loading`、`errorMessage` 等字段
- * @param onLoadClick 当用户点击“加载当前编号”按钮时调用的回调
+ * @param state 当前 UI 状态，包含列表数据、搜索词、筛选值、`loading`、`errorMessage` 等字段
  * @param modifier 可选的 [Modifier]，用于外层布局调整
  */
 @Composable
 private fun HomeScreen(
     state: HomeUiState,
-    onLoadClick: () -> Unit,
-    onPreviousClick: () -> Unit,
-    onNextClick: () -> Unit,
+    onRefreshClick: () -> Unit,
     onRetryClick: () -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onFilterChange: (TodoCompletionFilter) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(text = "Todo 浏览器", style = MaterialTheme.typography.headlineSmall)
-        Text(
-            text = "当前编号：#${state.currentTodoId}",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 8.dp)
-        )
-        Card(modifier = Modifier.padding(top = 16.dp)) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(text = "Todo 列表", style = MaterialTheme.typography.headlineSmall)
+                Text(
+                    text = state.resultSummary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            OutlinedButton(
+                onClick = onRefreshClick,
+                enabled = !state.loading
             ) {
-                when {
-                    state.loading -> {
+                Text(text = if (state.loading) "加载中..." else "刷新")
+            }
+        }
+        if (state.statusMessage != null) {
+            Text(
+                text = state.statusMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        OutlinedTextField(
+            value = state.searchQuery,
+            onValueChange = onSearchQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("搜索标题") },
+            singleLine = true
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            TodoFilterOptionButton(
+                text = TodoCompletionFilter.ALL.label,
+                selected = state.selectedFilter == TodoCompletionFilter.ALL,
+                onClick = { onFilterChange(TodoCompletionFilter.ALL) }
+            )
+            TodoFilterOptionButton(
+                text = TodoCompletionFilter.COMPLETED.label,
+                selected = state.selectedFilter == TodoCompletionFilter.COMPLETED,
+                onClick = { onFilterChange(TodoCompletionFilter.COMPLETED) }
+            )
+            TodoFilterOptionButton(
+                text = TodoCompletionFilter.INCOMPLETE.label,
+                selected = state.selectedFilter == TodoCompletionFilter.INCOMPLETE,
+                onClick = { onFilterChange(TodoCompletionFilter.INCOMPLETE) }
+            )
+        }
+        when {
+            state.loading && !state.hasLoadedOnce -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
                         CircularProgressIndicator()
-                        Text(
-                            text = "正在加载编号 #${state.currentTodoId}...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(top = 12.dp)
-                        )
+                        Text("正在加载 Todo 列表...")
                     }
+                }
+            }
 
-                    state.errorMessage != null -> {
+            state.errorMessage != null && state.allTodos.isEmpty() -> {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Text(
                             text = "加载失败",
                             style = MaterialTheme.typography.titleMedium,
@@ -102,73 +165,92 @@ private fun HomeScreen(
                         Text(
                             text = state.errorMessage,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(top = 8.dp)
+                            color = MaterialTheme.colorScheme.error
                         )
-                        Button(
-                            onClick = onRetryClick,
-                            modifier = Modifier.padding(top = 16.dp)
-                        ) {
-                            Text(text = "重试当前编号")
+                        Button(onClick = onRetryClick) {
+                            Text(text = "重新获取列表")
                         }
                     }
+                }
+            }
 
-                    state.hasContent -> {
+            state.hasContent -> {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(
+                        items = state.visibleTodos,
+                        key = { todo -> todo.id }
+                    ) { todo ->
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "#${todo.id} ${todo.title}",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = if (todo.completed) "状态：已完成" else "状态：未完成",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (todo.completed) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            state.hasLoadedOnce -> {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Text(
-                            text = state.todoTitle.orEmpty(),
+                            text = if (state.hasActiveFilters) "没有符合条件的 Todo" else "暂无 Todo 数据",
                             style = MaterialTheme.typography.titleMedium
                         )
-                        if (state.statusMessage != null) {
-                            Text(
-                                text = state.statusMessage,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
-                        }
                         Text(
-                            text = if (state.completed == true) "状态：已完成" else "状态：未完成",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-                    }
-
-                    else -> {
-                        Text(
-                            text = "点击下方按钮，加载远程 Todo 数据。",
+                            text = if (state.hasActiveFilters) {
+                                "试试调整搜索词或切换筛选条件。"
+                            } else {
+                                "点击刷新后会重新从网络拉取列表。"
+                            },
                             style = MaterialTheme.typography.bodyMedium
-                        )
-                        Text(
-                            text = "你可以继续浏览 1 到 200 号 Todo。",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 8.dp)
                         )
                     }
                 }
             }
         }
-        Row(
-            modifier = Modifier.padding(top = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+    }
+}
+
+@Composable
+private fun RowScope.TodoFilterOptionButton(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    if (selected) {
+        Button(
+            onClick = onClick,
+            modifier = Modifier.weight(1f)
         ) {
-            OutlinedButton(
-                onClick = onPreviousClick,
-                enabled = state.canLoadPrevious && !state.loading
-            ) {
-                Text(text = "上一个")
-            }
-            Button(
-                onClick = onLoadClick,
-                enabled = !state.loading
-            ) {
-                Text(text = if (state.hasContent) "重新加载" else "加载当前编号")
-            }
-            OutlinedButton(
-                onClick = onNextClick,
-                enabled = state.canLoadNext && !state.loading
-            ) {
-                Text(text = "下一个")
-            }
+            Text(text = text)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(text = text)
         }
     }
 }

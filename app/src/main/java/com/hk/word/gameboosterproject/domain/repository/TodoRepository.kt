@@ -14,6 +14,13 @@ data class TodoLoadResult(
     val source: TodoDataSource
 )
 
+data class TodoListLoadResult(
+    val todos: List<Todo>,
+    val source: TodoDataSource
+)
+
 interface TodoRepository {
     suspend fun getTodo(todoId: Int): NetworkResult<TodoLoadResult>
+
+    suspend fun getTodos(): NetworkResult<TodoListLoadResult>
 }

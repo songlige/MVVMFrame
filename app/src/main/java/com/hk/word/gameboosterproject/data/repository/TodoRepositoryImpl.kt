@@ -1,23 +1,29 @@
 package com.hk.word.gameboosterproject.data.repository
 
 import com.hk.word.gameboosterproject.core.network.NetworkResult
-import com.hk.word.gameboosterproject.data.remote.api.TodoApiService
-import com.hk.word.gameboosterproject.domain.model.Todo
+import com.hk.word.gameboosterproject.data.local.dao.TodoDao
+import com.hk.word.gameboosterproject.data.local.mapper.toDomain
+import com.hk.word.gameboosterproject.data.local.mapper.toEntity
+import com.hk.word.gameboosterproject.data.remote.api.TodoRemoteDataSource
+import com.hk.word.gameboosterproject.domain.repository.TodoDataSource
+import com.hk.word.gameboosterproject.domain.repository.TodoLoadResult
 import com.hk.word.gameboosterproject.domain.repository.TodoRepository
 
 /**
  * Todo 仓库的实现：通过注入的 [TodoApiService] 拉取远端数据，
- * 并将远端的 DTO 映射为领域层的 [Todo] 对象。
+ * 并结合 [TodoDao] 完成本地缓存读写。
  *
- * - 在成功 (NetworkResult.Success) 情况下，将 DTO 转换为领域模型并返回 Success
- * - 在错误 (NetworkResult.Error) 情况下，直接透传错误结果
+ * - 远端成功时：写入 Room 缓存，再返回最新数据
+ * - 远端失败时：优先回退到本地缓存；若无缓存则透传网络错误
  *
  * 这样上层（例如 UseCase / ViewModel）可以统一处理 [NetworkResult] 的成功/失败分支。
  *
- * @param apiService 用于实际执行网络请求的 API 服务
+ * @param remoteDataSource 用于实际执行网络请求的远端数据源
+ * @param todoDao 用于读写 Todo 本地缓存的 Room DAO
  */
 class TodoRepositoryImpl(
-    private val apiService: TodoApiService
+    private val remoteDataSource: TodoRemoteDataSource,
+    private val todoDao: TodoDao
 ) : TodoRepository {
     /**
      * 从远端获取 Todo 并映射为领域模型。
@@ -28,20 +34,32 @@ class TodoRepositoryImpl(
      *
      * 返回类型：`NetworkResult<Todo>`，上层需根据 Success/Error 做相应处理。
      */
-    override suspend fun getTodo(): NetworkResult<Todo> {
-        return when (val result = apiService.fetchTodo()) {
+    override suspend fun getTodo(todoId: Int): NetworkResult<TodoLoadResult> {
+        return when (val result = remoteDataSource.fetchTodo(todoId)) {
             is NetworkResult.Success -> {
                 val dto = result.data
+                todoDao.insertTodo(dto.toEntity())
                 NetworkResult.Success(
-                    Todo(
-                        id = dto.id,
-                        title = dto.title,
-                        completed = dto.completed
+                    TodoLoadResult(
+                        todo = dto.toDomain(),
+                        source = TodoDataSource.Remote
                     )
                 )
             }
 
-            is NetworkResult.Error -> result
+            is NetworkResult.Error -> {
+                val cachedTodo = todoDao.getTodoById(todoId)
+                if (cachedTodo != null) {
+                    NetworkResult.Success(
+                        TodoLoadResult(
+                            todo = cachedTodo.toDomain(),
+                            source = TodoDataSource.LocalCache(result.exception)
+                        )
+                    )
+                } else {
+                    result
+                }
+            }
         }
     }
 }

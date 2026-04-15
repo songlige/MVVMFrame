@@ -28,6 +28,7 @@ import com.hk.word.gameboosterproject.ui.theme.GameBoosterProjectTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ServiceLocator.init(applicationContext)
         enableEdgeToEdge()
         setContent {
             GameBoosterProjectTheme {

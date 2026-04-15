@@ -1,11 +1,14 @@
 package com.hk.word.gameboosterproject.core.di
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.room.Room
 import com.hk.word.gameboosterproject.BuildConfig
 import com.hk.word.gameboosterproject.core.network.HttpClient
 import com.hk.word.gameboosterproject.core.network.HttpLogger
+import com.hk.word.gameboosterproject.data.local.db.AppDatabase
 import com.hk.word.gameboosterproject.data.remote.api.TodoApiService
 import com.hk.word.gameboosterproject.data.repository.TodoRepositoryImpl
 import com.hk.word.gameboosterproject.domain.usecase.GetTodoUseCase
@@ -24,6 +27,15 @@ import com.hk.word.gameboosterproject.presentation.home.HomeViewModel
  * val vm = ViewModelProvider(this, factory).get(HomeViewModel::class.java)
  */
 object ServiceLocator {
+    @Volatile
+    private var appContext: Context? = null
+
+    fun init(context: Context) {
+        if (appContext == null) {
+            appContext = context.applicationContext
+        }
+    }
+
     // Http 客户端，带可选的日志记录器（仅在 DEBUG 模式下启用）
     private val httpClient by lazy {
         HttpClient(
@@ -36,11 +48,24 @@ object ServiceLocator {
         )
     }
 
+    private val appDatabase by lazy {
+        val context = checkNotNull(appContext) {
+            "ServiceLocator must be initialized before accessing AppDatabase."
+        }
+        Room.databaseBuilder(
+            context,
+            AppDatabase::class.java,
+            "gamebooster.db"
+        ).build()
+    }
+
+    private val todoDao by lazy { appDatabase.todoDao() }
+
     // API 服务：使用同一个 httpClient 创建（单例）
     private val todoApiService by lazy { TodoApiService(httpClient) }
 
     // 仓库实现：负责调用 API 并转换为域层需要的数据结构
-    private val todoRepository by lazy { TodoRepositoryImpl(todoApiService) }
+    private val todoRepository by lazy { TodoRepositoryImpl(todoApiService, todoDao) }
 
     // 用例（UseCase）：封装业务逻辑，供 ViewModel 调用
     private val getTodoUseCase by lazy { GetTodoUseCase(todoRepository) }
